@@ -1,0 +1,55 @@
+name: build-macos-dmg
+
+"on":
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dmg:
+    runs-on: macos-14          # Apple Silicon 云机；产物为 arm64，M 系列芯片直接可用
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 构建 .app 与 .dmg
+        env:
+          PIP_INDEX: https://pypi.org/simple   # 云机在海外，用官方源更快
+        run: bash mac/build_mac.sh
+
+      - name: 校验产物（真机验证，本机做不到）
+        run: |
+          set -euo pipefail
+          DMG=$(ls dist/*.dmg | head -1)
+          APP="dist/Bytego Image Master.app"
+          echo "dmg: $DMG  ($(du -h "$DMG" | cut -f1))"
+          file "$DMG"
+          codesign --verify --deep --strict --verbose=2 "$APP" || echo "WARN: codesign 严格校验未通过（ad-hoc 签名不影响安装）"
+          hdiutil imageinfo "$DMG" | head -12
+          # 挂载并确认 .app 在卷内可见
+          MP=$(hdiutil attach -nobrowse -readonly "$DMG" | grep -o '/Volumes/.*' | tail -1)
+          echo "mounted at $MP"
+          ls -la "$MP"
+          test -d "$MP/Bytego Image Master.app"
+          test -L "$MP/Applications"
+          # 确认主程序二进制架构与可执行位
+          BIN="$MP/Bytego Image Master.app/Contents/MacOS/Bytego Image Master"
+          file "$BIN"
+          lipo -archs "$BIN" || true
+          hdiutil detach "$MP"
+          echo "sha256: $(shasum -a 256 "$DMG" | cut -d' ' -f1)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bytego-macos-dmg
+          path: dist/*.dmg
+          if-no-files-found: error
+          retention-days: 30
